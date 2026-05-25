@@ -7,7 +7,6 @@ This script keeps the three responsibilities separate:
 """
 
 from __future__ import annotations
-
 import asyncio
 import json
 import logging
@@ -18,7 +17,6 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
-
 from google import genai
 from google.genai import types
 from telcoflow_sdk import ActiveCall, TelcoflowClient, TelcoflowClientConfig
