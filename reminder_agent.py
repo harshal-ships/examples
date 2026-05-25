@@ -24,9 +24,9 @@ from booking_agent import (
     BOOKINGS_PATH,
     OpenClawClient,
     TranscriptLine,
+    ensure_google_calendar_credentials,
     make_gemini_client,
     make_telcoflow_config,
-    require_env,
     run_gemini_voice_call,
     transcript_text,
 )
@@ -194,7 +194,7 @@ You are Maya's post-reminder automation worker for HealthFirst Clinic.
 
 Responsibilities:
 - Use OpenClaw with existing GOOGLE_API_KEY/GEMINI_API_KEY routing. OpenClaw has no API key of its own.
-- Use Google Calendar credentials from this path: {require_env("GOOGLE_CALENDAR_CREDENTIALS")}
+- Use Google Calendar credentials from this path: {ensure_google_calendar_credentials()}
 - Update only this booking database: {BOOKINGS_PATH}
 - Use Google Calendar for all calendar changes.
 
@@ -254,7 +254,7 @@ Before ending, clearly summarize what they chose."""
 
 async def main() -> None:
     """Run Telcoflow call handling and the hourly reminder monitor together."""
-    require_env("GOOGLE_CALENDAR_CREDENTIALS")
+    ensure_google_calendar_credentials()
     config: TelcoflowClientConfig = make_telcoflow_config()
     coordinator = ReminderCoordinator(
         store=BookingStore(),

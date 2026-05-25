@@ -64,6 +64,39 @@ def require_env(name: str) -> str:
     return value
 
 
+def ensure_google_calendar_credentials() -> str:
+    """Materialize Render's JSON secret into the credentials file OpenClaw expects."""
+    credentials_path = os.getenv("GOOGLE_CALENDAR_CREDENTIALS")
+    if credentials_path:
+        return credentials_path
+
+    credentials_json = os.getenv("GOOGLE_CALENDAR_CREDENTIALS_JSON")
+    if not credentials_json:
+        raise RuntimeError(
+            "Missing Google Calendar credentials. Set GOOGLE_CALENDAR_CREDENTIALS "
+            "to a credentials file path, or set GOOGLE_CALENDAR_CREDENTIALS_JSON "
+            "to the full JSON credentials object."
+        )
+
+    target_path = Path(
+        os.getenv("GOOGLE_CALENDAR_CREDENTIALS_PATH", "/data/google-calendar-credentials.json")
+    )
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        credentials_data = json.loads(credentials_json)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(
+            "GOOGLE_CALENDAR_CREDENTIALS_JSON must be one complete JSON object, "
+            "not separate Render env vars for each JSON field."
+        ) from exc
+
+    target_path.write_text(json.dumps(credentials_data), encoding="utf-8")
+    target_path.chmod(0o600)
+    os.environ["GOOGLE_CALENDAR_CREDENTIALS"] = str(target_path)
+    return str(target_path)
+
+
 def make_gemini_client() -> genai.Client:
     """Create the Gemini client with the same Google key OpenClaw can route through."""
     return genai.Client(api_key=require_env("GOOGLE_API_KEY"))
@@ -271,7 +304,7 @@ async def process_booking_with_openclaw(
     transcript: list[TranscriptLine],
 ) -> dict[str, Any]:
     """Ask OpenClaw to extract booking details and perform all external actions."""
-    calendar_credentials = require_env("GOOGLE_CALENDAR_CREDENTIALS")
+    calendar_credentials = ensure_google_calendar_credentials()
     rendered_transcript = transcript_text(transcript)
     if not rendered_transcript.strip():
         raise RuntimeError("Gemini did not return a transcript for OpenClaw to process.")
@@ -339,7 +372,7 @@ async def handle_incoming_call(
 
 async def main() -> None:
     """Start the long-running Telcoflow client for inbound appointment calls."""
-    require_env("GOOGLE_CALENDAR_CREDENTIALS")
+    ensure_google_calendar_credentials()
     gemini_client = make_gemini_client()
     openclaw = OpenClawClient()
     config = make_telcoflow_config()
