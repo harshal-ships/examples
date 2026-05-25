@@ -5,7 +5,6 @@ This script keeps the three responsibilities separate:
 - Gemini owns the real-time voice conversation.
 - OpenClaw owns post-call automation across Calendar, messaging, and bookings.json.
 """
-
 from __future__ import annotations
 import asyncio
 import json
