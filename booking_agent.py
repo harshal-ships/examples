@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import subprocess
@@ -31,6 +32,13 @@ BOOKINGS_PATH = Path(os.getenv("BOOKINGS_PATH", "bookings.json")).resolve()
 GEMINI_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
 OPENCLAW_AGENT = os.getenv("OPENCLAW_AGENT", "main")
 OPENCLAW_TIMEOUT_SECONDS = int(os.getenv("OPENCLAW_TIMEOUT_SECONDS", "900"))
+LOG_TRANSCRIPTS = os.getenv("LOG_TRANSCRIPTS", "true").lower() in {"1", "true", "yes", "on"}
+
+logging.basicConfig(
+    level=os.getenv("LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
+logger = logging.getLogger(__name__)
 
 
 # Maya's system prompt is intentionally limited to the voice conversation.
@@ -116,6 +124,17 @@ def transcript_text(transcript: list[TranscriptLine]) -> str:
     return "\n".join(f"{line.speaker}: {line.text}" for line in transcript if line.text)
 
 
+def record_transcript_line(transcript: list[TranscriptLine], speaker: str, text: str) -> None:
+    """Store a transcript segment and optionally mirror it to container logs."""
+    clean_text = text.strip()
+    if not clean_text:
+        return
+
+    transcript.append(TranscriptLine(speaker, clean_text))
+    if LOG_TRANSCRIPTS:
+        logger.info("Transcript [%s]: %s", speaker, clean_text)
+
+
 async def run_gemini_voice_call(
     call: ActiveCall,
     gemini_client: genai.Client,
@@ -171,14 +190,12 @@ async def run_gemini_voice_call(
                     continue
 
                 if content.input_transcription and content.input_transcription.text:
-                    transcript.append(
-                        TranscriptLine("PATIENT", content.input_transcription.text.strip())
+                    record_transcript_line(
+                        transcript, "PATIENT", content.input_transcription.text
                     )
 
                 if content.output_transcription and content.output_transcription.text:
-                    transcript.append(
-                        TranscriptLine("MAYA", content.output_transcription.text.strip())
-                    )
+                    record_transcript_line(transcript, "MAYA", content.output_transcription.text)
 
                 if content.interrupted:
                     await call.clear_send_audio_buffer()
