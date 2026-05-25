@@ -183,27 +183,34 @@ async def run_gemini_voice_call(
                 )
 
         async def receive_from_gemini() -> None:
-            """Send Gemini audio back to Telcoflow and collect both sides' transcripts."""
-            async for response in session.receive():
-                content = response.server_content
-                if not content:
-                    continue
+            """Send Gemini audio back to Telcoflow across every conversation turn."""
+            while not call_ended.is_set():
+                async for response in session.receive():
+                    content = response.server_content
+                    if not content:
+                        continue
 
-                if content.input_transcription and content.input_transcription.text:
-                    record_transcript_line(
-                        transcript, "PATIENT", content.input_transcription.text
-                    )
+                    if content.input_transcription and content.input_transcription.text:
+                        record_transcript_line(
+                            transcript, "PATIENT", content.input_transcription.text
+                        )
 
-                if content.output_transcription and content.output_transcription.text:
-                    record_transcript_line(transcript, "MAYA", content.output_transcription.text)
+                    if content.output_transcription and content.output_transcription.text:
+                        record_transcript_line(
+                            transcript, "MAYA", content.output_transcription.text
+                        )
 
-                if content.interrupted:
-                    await call.clear_send_audio_buffer()
+                    if content.interrupted:
+                        if hasattr(call, "interrupt"):
+                            await call.interrupt()
+                        else:
+                            await call.clear_send_audio_buffer()
+                        break
 
-                if content.model_turn:
-                    for part in content.model_turn.parts:
-                        if part.inline_data and part.inline_data.data:
-                            await call.send_audio(part.inline_data.data)
+                    if content.model_turn:
+                        for part in content.model_turn.parts:
+                            if part.inline_data and part.inline_data.data:
+                                await call.send_audio(part.inline_data.data)
 
         async def wait_for_call_end() -> None:
             """Stop the Gemini session promptly once Telcoflow reports the call is over."""
