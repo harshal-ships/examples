@@ -31,3 +31,7 @@ services:
         sync: false
       - key: OPENCLAW_AGENT
         value: main
+      - key: LOG_LEVEL
+        value: INFO
+      - key: LOG_TRANSCRIPTS
+        value: "true"

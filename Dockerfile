@@ -21,8 +21,7 @@ WORKDIR /app
 COPY requirements.txt .
 RUN python3 -m venv /opt/venv \
     && pip install --upgrade pip \
-    && pip install -r requirements.txt \
-    && pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple telcoflow-sdk==0.27.1
+    && pip install --index-url https://test.pypi.org/simple/ --extra-index-url https://pypi.org/simple -r requirements.txt
 
 COPY booking_agent.py reminder_agent.py render_start.sh ./
 RUN chmod +x /app/render_start.sh

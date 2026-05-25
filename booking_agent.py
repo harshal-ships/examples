@@ -130,7 +130,13 @@ def record_transcript_line(transcript: list[TranscriptLine], speaker: str, text:
     if not clean_text:
         return
 
-    transcript.append(TranscriptLine(speaker, clean_text))
+    if transcript and transcript[-1].speaker == speaker:
+        previous = transcript[-1].text
+        separator = "" if clean_text[:1] in {".", ",", "!", "?", ";", ":"} else " "
+        transcript[-1] = TranscriptLine(speaker, f"{previous}{separator}{clean_text}")
+    else:
+        transcript.append(TranscriptLine(speaker, clean_text))
+
     if LOG_TRANSCRIPTS:
         logger.info("Transcript [%s]: %s", speaker, clean_text)
 

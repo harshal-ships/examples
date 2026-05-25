@@ -11,8 +11,24 @@ mkdir -p "$OPENCLAW_STATE_DIR" "$OPENCLAW_WORKSPACE_DIR"
 
 # Render secret env vars are easier to manage than committing credentials files.
 if [[ -n "${GOOGLE_CALENDAR_CREDENTIALS_JSON:-}" && -z "${GOOGLE_CALENDAR_CREDENTIALS:-}" ]]; then
-  export GOOGLE_CALENDAR_CREDENTIALS="/data/google-calendar-credentials.json"
-  printf '%s' "$GOOGLE_CALENDAR_CREDENTIALS_JSON" > "$GOOGLE_CALENDAR_CREDENTIALS"
+  export GOOGLE_CALENDAR_CREDENTIALS="${GOOGLE_CALENDAR_CREDENTIALS_PATH:-/data/google-calendar-credentials.json}"
+  python - "$GOOGLE_CALENDAR_CREDENTIALS" <<'PY'
+import json
+import os
+import sys
+
+target_path = sys.argv[1]
+try:
+    credentials = json.loads(os.environ["GOOGLE_CALENDAR_CREDENTIALS_JSON"])
+except json.JSONDecodeError as exc:
+    raise SystemExit(
+        "GOOGLE_CALENDAR_CREDENTIALS_JSON must be one complete JSON object, "
+        "not separate Render env vars for each JSON field."
+    ) from exc
+
+with open(target_path, "w", encoding="utf-8") as credentials_file:
+    json.dump(credentials, credentials_file)
+PY
   chmod 600 "$GOOGLE_CALENDAR_CREDENTIALS"
 fi
 
