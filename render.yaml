@@ -1,21 +1,33 @@
 services:
   - type: web
-    name: openclaw
+    name: healthfirst-agent
     runtime: docker
     plan: starter
-    healthCheckPath: /health
+    healthCheckPath: /healthz
     disk:
-      name: openclaw-data
+      name: healthfirst-agent-data
       mountPath: /data
       sizeGB: 1
     envVars:
+      - key: AGENT_MODE
+        value: booking
       - key: OPENCLAW_GATEWAY_PORT
         value: "8080"
       - key: OPENCLAW_STATE_DIR
         value: /data/.openclaw
       - key: OPENCLAW_WORKSPACE_DIR
         value: /data/workspace
+      - key: BOOKINGS_PATH
+        value: /data/bookings.json
       - key: OPENCLAW_GATEWAY_TOKEN
         generateValue: true
       - key: GOOGLE_API_KEY
         sync: false
+      - key: WSS_API_KEY
+        sync: false
+      - key: WSS_CONNECTOR_UUID
+        sync: false
+      - key: GOOGLE_CALENDAR_CREDENTIALS_JSON
+        sync: false
+      - key: OPENCLAW_AGENT
+        value: main

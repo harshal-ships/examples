@@ -27,7 +27,7 @@ import telcoflow_sdk.events as events
 # Runtime constants are centralized so the Telcoflow, Gemini, and OpenClaw
 # boundaries stay visible instead of being mixed into call handlers.
 AUDIO_MIME_TYPE = "audio/pcm;rate=24000"
-BOOKINGS_PATH = Path("bookings.json").resolve()
+BOOKINGS_PATH = Path(os.getenv("BOOKINGS_PATH", "bookings.json")).resolve()
 GEMINI_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
 OPENCLAW_AGENT = os.getenv("OPENCLAW_AGENT", "main")
 OPENCLAW_TIMEOUT_SECONDS = int(os.getenv("OPENCLAW_TIMEOUT_SECONDS", "900"))
