@@ -351,7 +351,7 @@ async def main() -> None:
                 await handle_incoming_call(call, gemini_client, openclaw)
             except Exception as exc:
                 print(f"Call {call.call_id} failed: {exc}", file=sys.stderr)
-                await call.force_disconnect()
+                await call.disconnect()
 
         await client.run_forever()
 

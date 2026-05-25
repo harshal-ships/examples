@@ -162,7 +162,7 @@ Return only JSON:
                 f"No pending reminder booking matched call {call.call_id}; disconnecting.",
                 file=sys.stderr,
             )
-            await call.force_disconnect()
+            await call.disconnect()
             return
 
         prompt = make_reminder_prompt(booking)
@@ -269,7 +269,7 @@ async def main() -> None:
                 await coordinator.handle_telcoflow_call(call)
             except Exception as exc:
                 print(f"Reminder call {call.call_id} failed: {exc}", file=sys.stderr)
-                await call.force_disconnect()
+                await call.disconnect()
 
         await asyncio.gather(client.run_forever(), coordinator.hourly_loop())
 
