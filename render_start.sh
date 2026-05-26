@@ -112,7 +112,7 @@ with open(sys.argv[1], "w", encoding="utf-8") as config_file:
 PY
 
 # Start OpenClaw first so the Python scripts can use `openclaw agent` locally.
-openclaw gateway --bind lan --port "$OPENCLAW_GATEWAY_PORT" --config "$OPENCLAW_CONFIG_PATH" --allow-unconfigured &
+openclaw gateway --bind lan --port "$OPENCLAW_GATEWAY_PORT" --allow-unconfigured &
 OPENCLAW_PID=$!
 
 
