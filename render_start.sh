@@ -112,8 +112,8 @@ with open(sys.argv[1], "w", encoding="utf-8") as config_file:
 PY
 
 # Start OpenClaw first so the Python scripts can use `openclaw agent` locally.
-# The Render-installed OpenClaw CLI uses `gateway lan` and reads OPENCLAW_CONFIG_PATH.
-openclaw gateway lan --port "$OPENCLAW_GATEWAY_PORT" --allow-unconfigured &
+# The Render-installed OpenClaw CLI uses `gateway lan` with config/env defaults.
+openclaw gateway lan &
 OPENCLAW_PID=$!
 
 
