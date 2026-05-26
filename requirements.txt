@@ -1,4 +1,6 @@
 google-genai
 telcoflow-sdk==0.27.1
 python-dotenv
+google-api-python-client
+google-auth
 #ping

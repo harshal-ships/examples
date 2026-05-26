@@ -3,7 +3,8 @@
 This script keeps the three responsibilities separate:
 - Telcoflow owns phone-call audio in and out.
 - Gemini owns the real-time voice conversation.
-- OpenClaw owns post-call automation across Calendar, messaging, and bookings.json.
+- OpenClaw extracts post-call booking details and sends patient confirmations.
+- Python owns deterministic Calendar and bookings.json writes.
 """
 from __future__ import annotations
 import asyncio
@@ -13,11 +14,16 @@ import os
 import re
 import subprocess
 import sys
+import uuid
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
+from zoneinfo import ZoneInfo
 from google import genai
 from google.genai import types
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
 from telcoflow_sdk import ActiveCall, TelcoflowClient, TelcoflowClientConfig
 import telcoflow_sdk.events as events
 
@@ -39,6 +45,9 @@ GEMINI_MODEL = "gemini-2.5-flash-native-audio-preview-12-2025"
 OPENCLAW_AGENT = os.getenv("OPENCLAW_AGENT", "main")
 OPENCLAW_TIMEOUT_SECONDS = int(os.getenv("OPENCLAW_TIMEOUT_SECONDS", "900"))
 LOG_TRANSCRIPTS = os.getenv("LOG_TRANSCRIPTS", "true").lower() in {"1", "true", "yes", "on"}
+CLINIC_TIMEZONE = os.getenv("CLINIC_TIMEZONE", "Asia/Singapore")
+APPOINTMENT_DURATION_MINUTES = int(os.getenv("APPOINTMENT_DURATION_MINUTES", "30"))
+GOOGLE_CALENDAR_SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
 logging.basicConfig(
     level=os.getenv("LOG_LEVEL", "INFO").upper(),
@@ -58,7 +67,7 @@ Collect the following one step at a time:
 - Preferred appointment date
 - Preferred appointment time
 - Type of appointment: general checkup, specialist, or follow-up
-Confirm all details only one timeclearly before ending the call.
+Confirm all details only one time clearly before ending the call.
 Do not claim that the appointment is booked during the call. Say that you will check availability and send a confirmation shortly."""
 
 
@@ -68,6 +77,14 @@ class TranscriptLine:
 
     speaker: str
     text: str
+
+
+@dataclass(frozen=True)
+class AppointmentRange:
+    """Timezone-aware appointment window used for Calendar free/busy checks."""
+
+    start: datetime
+    end: datetime
 
 
 def require_env(name: str) -> str:
@@ -124,6 +141,117 @@ def make_telcoflow_config() -> TelcoflowClientConfig:
         connector_uuid=require_env("WSS_CONNECTOR_UUID"),
         sample_rate=24000,
     )
+
+
+class GoogleCalendarClient:
+    """Direct Google Calendar API client backed by the configured service account."""
+
+    def __init__(
+        self,
+        credentials_path: str,
+        calendar_id: str,
+        timezone_name: str = CLINIC_TIMEZONE,
+    ):
+        self.calendar_id = calendar_id
+        self.timezone_name = timezone_name
+        self.timezone = ZoneInfo(timezone_name)
+        credentials = service_account.Credentials.from_service_account_file(
+            credentials_path,
+            scopes=GOOGLE_CALENDAR_SCOPES,
+        )
+        self.service = build("calendar", "v3", credentials=credentials, cache_discovery=False)
+
+    def appointment_range(self, booking: dict[str, Any]) -> AppointmentRange:
+        """Convert extracted date/time strings into a concrete appointment window."""
+        appointment_date = str(booking["appointment_date"]).strip()
+        appointment_time = str(booking["appointment_time"]).strip()
+        if re.fullmatch(r"\d{2}:\d{2}", appointment_time):
+            appointment_time = f"{appointment_time}:00"
+
+        start = datetime.fromisoformat(f"{appointment_date}T{appointment_time}")
+        if start.tzinfo is None:
+            start = start.replace(tzinfo=self.timezone)
+        end = start + timedelta(minutes=APPOINTMENT_DURATION_MINUTES)
+        return AppointmentRange(start=start, end=end)
+
+    def is_available(self, appointment: AppointmentRange) -> bool:
+        """Return True when the target calendar has no busy blocks in this window."""
+        body = {
+            "timeMin": appointment.start.isoformat(),
+            "timeMax": appointment.end.isoformat(),
+            "timeZone": self.timezone_name,
+            "items": [{"id": self.calendar_id}],
+        }
+        response = self.service.freebusy().query(body=body).execute()
+        busy_blocks = response.get("calendars", {}).get(self.calendar_id, {}).get("busy", [])
+        return not busy_blocks
+
+    def create_event(
+        self,
+        booking: dict[str, Any],
+        appointment: AppointmentRange,
+        call_id: str,
+    ) -> dict[str, Any]:
+        """Insert the confirmed appointment into the configured Google Calendar."""
+        patient_name = str(booking["patient_name"]).strip()
+        appointment_type = str(booking["appointment_type"]).strip()
+        phone_number = str(booking["phone_number"]).strip()
+        event = {
+            "summary": f"HealthFirst {appointment_type} - {patient_name}",
+            "description": (
+                "Booked by Maya phone agent.\n"
+                f"Patient: {patient_name}\n"
+                f"Phone: {phone_number}\n"
+                f"Appointment type: {appointment_type}\n"
+                f"Telcoflow call id: {call_id}"
+            ),
+            "start": {
+                "dateTime": appointment.start.isoformat(),
+                "timeZone": self.timezone_name,
+            },
+            "end": {
+                "dateTime": appointment.end.isoformat(),
+                "timeZone": self.timezone_name,
+            },
+        }
+        return self.service.events().insert(calendarId=self.calendar_id, body=event).execute()
+
+    def next_available_slots(
+        self,
+        requested: AppointmentRange,
+        count: int = 3,
+    ) -> list[dict[str, str]]:
+        """Find a small set of nearby alternatives during clinic hours."""
+        slots: list[dict[str, str]] = []
+        candidate_start = requested.start + timedelta(minutes=APPOINTMENT_DURATION_MINUTES)
+        clinic_open_hour = int(os.getenv("CLINIC_OPEN_HOUR", "9"))
+        clinic_close_hour = int(os.getenv("CLINIC_CLOSE_HOUR", "17"))
+
+        while len(slots) < count:
+            if candidate_start.hour < clinic_open_hour:
+                candidate_start = candidate_start.replace(
+                    hour=clinic_open_hour, minute=0, second=0, microsecond=0
+                )
+            if candidate_start.hour >= clinic_close_hour:
+                next_day = candidate_start + timedelta(days=1)
+                candidate_start = next_day.replace(
+                    hour=clinic_open_hour, minute=0, second=0, microsecond=0
+                )
+
+            candidate = AppointmentRange(
+                start=candidate_start,
+                end=candidate_start + timedelta(minutes=APPOINTMENT_DURATION_MINUTES),
+            )
+            if self.is_available(candidate):
+                slots.append(
+                    {
+                        "appointment_date": candidate.start.date().isoformat(),
+                        "appointment_time": candidate.start.strftime("%H:%M"),
+                    }
+                )
+            candidate_start += timedelta(minutes=APPOINTMENT_DURATION_MINUTES)
+
+        return slots
 
 
 def transcript_text(transcript: list[TranscriptLine]) -> str:
@@ -340,48 +468,85 @@ async def process_booking_with_openclaw(
     call: ActiveCall,
     transcript: list[TranscriptLine],
 ) -> dict[str, Any]:
-    """Ask OpenClaw to extract booking details and perform all external actions."""
+    """Extract booking details with OpenClaw, then write Calendar/bookings directly."""
     calendar_credentials = ensure_google_calendar_credentials()
+    calendar = GoogleCalendarClient(
+        credentials_path=calendar_credentials,
+        calendar_id=require_env("GOOGLE_CALENDAR_ID"),
+    )
     rendered_transcript = transcript_text(transcript)
     if not rendered_transcript.strip():
         raise RuntimeError("Gemini did not return a transcript for OpenClaw to process.")
 
+    extraction = await extract_booking_with_openclaw(openclaw, call, rendered_transcript)
+    booking = normalize_extracted_booking(extraction, call)
+    if booking is None:
+        return {
+            "status": "needs_human_review",
+            "booking": None,
+            "next_available_slots": [],
+            "message_sent": False,
+            "telcoflow_outbound_requested": False,
+            "notes": extraction.get("notes", "OpenClaw could not extract a complete booking."),
+        }
+
+    appointment = calendar.appointment_range(booking)
+    if not calendar.is_available(appointment):
+        return {
+            "status": "unavailable",
+            "booking": None,
+            "next_available_slots": calendar.next_available_slots(appointment),
+            "message_sent": False,
+            "telcoflow_outbound_requested": False,
+            "notes": "Requested slot is not available in Google Calendar.",
+        }
+
+    event = calendar.create_event(booking, appointment, call.call_id)
+    booking_record = build_booking_record(booking, event)
+    append_booking_record(booking_record)
+    message_result = await send_confirmation_with_openclaw(openclaw, call, booking_record)
+
+    return {
+        "status": "confirmed",
+        "booking": booking_record,
+        "next_available_slots": [],
+        "message_sent": message_result.get("message_sent") is True,
+        "telcoflow_outbound_requested": False,
+        "notes": message_result.get("notes", "Calendar event created and booking stored."),
+    }
+
+
+async def extract_booking_with_openclaw(
+    openclaw: OpenClawClient,
+    call: ActiveCall,
+    rendered_transcript: str,
+) -> dict[str, Any]:
+    """Use OpenClaw only for structured extraction from the voice transcript."""
+    today = datetime.now(ZoneInfo(CLINIC_TIMEZONE)).date().isoformat()
     message = f"""
-You are Maya's post-call automation worker for HealthFirst Clinic.
+You are Maya's post-call extraction worker for HealthFirst Clinic.
 
 Responsibilities:
 - Use OpenClaw with the existing GOOGLE_API_KEY/GEMINI_API_KEY routing. OpenClaw has no API key of its own.
-- Use Google Calendar credentials from this path: {calendar_credentials}
-- Treat {BOOKINGS_PATH} as the booking database with this shape:
-  {{"bookings":[{{"id":"uuid","patient_name":"John Doe","phone_number":"+6512345678","appointment_date":"2026-05-28","appointment_time":"10:00","appointment_type":"general checkup","status":"confirmed","calendar_event_id":"google_calendar_event_id"}}]}}
-- Do not modify unrelated files.
+- Extract structured appointment details from the transcript only.
+- Do not check Google Calendar, create calendar events, edit files, or send messages.
+- Today is {today}; resolve relative dates into YYYY-MM-DD.
 
 Work to perform:
 1. Read the full transcript below.
 2. Extract patient full name, phone number, preferred date, preferred time, and appointment type.
-3. Check Google Calendar availability for the requested HealthFirst Clinic appointment slot.
-4. If available, create the Google Calendar event, append the booking to bookings.json with status "confirmed", and send the patient a confirmation only through a configured WhatsApp or Telegram channel.
-5. If unavailable, find the next 3 available appointment slots and use OpenClaw to trigger a Telcoflow outbound call to the patient's phone number so Maya can offer those slots. Also send those options only through a configured WhatsApp or Telegram channel.
-6. Never use SMS, Discord, Slack, email, or any other channel for patient confirmations.
+3. If any required detail is missing or ambiguous, return "needs_human_review".
 
 Return only one JSON object with:
 {{
-  "status": "confirmed" | "unavailable" | "needs_human_review",
+  "status": "extracted" | "needs_human_review",
   "booking": null | {{
-    "id": "uuid",
     "patient_name": "string",
     "phone_number": "string",
     "appointment_date": "YYYY-MM-DD",
     "appointment_time": "HH:MM",
-    "appointment_type": "general checkup|specialist|follow-up",
-    "status": "confirmed",
-    "calendar_event_id": "string"
+    "appointment_type": "general checkup|specialist|follow-up"
   }},
-  "next_available_slots": [
-    {{"appointment_date": "YYYY-MM-DD", "appointment_time": "HH:MM"}}
-  ],
-  "message_sent": true | false,
-  "telcoflow_outbound_requested": true | false,
   "notes": "short operational note"
 }}
 
@@ -394,7 +559,112 @@ Transcript:
 {rendered_transcript}
 """.strip()
 
-    return await openclaw.run_json(f"healthfirst-booking-{call.call_id}", message)
+    return await openclaw.run_json(f"healthfirst-booking-extract-{call.call_id}", message)
+
+
+def normalize_extracted_booking(
+    extraction: dict[str, Any],
+    call: ActiveCall,
+) -> dict[str, str] | None:
+    """Validate and normalize OpenClaw's extracted booking payload."""
+    if extraction.get("status") not in {"extracted", "confirmed"}:
+        return None
+    booking = extraction.get("booking")
+    if not isinstance(booking, dict):
+        return None
+
+    required_fields = [
+        "patient_name",
+        "phone_number",
+        "appointment_date",
+        "appointment_time",
+        "appointment_type",
+    ]
+    normalized: dict[str, str] = {}
+    for field in required_fields:
+        value = str(booking.get(field, "")).strip()
+        if not value or value.lower() in {"unknown", "null", "none"}:
+            return None
+        normalized[field] = value
+
+    if normalized["phone_number"].lower() == "caller_number":
+        normalized["phone_number"] = call.caller_number
+    return normalized
+
+
+def build_booking_record(booking: dict[str, str], event: dict[str, Any]) -> dict[str, str]:
+    """Create the canonical bookings.json record after Calendar insertion succeeds."""
+    return {
+        "id": str(uuid.uuid4()),
+        "patient_name": booking["patient_name"],
+        "phone_number": booking["phone_number"],
+        "appointment_date": booking["appointment_date"],
+        "appointment_time": booking["appointment_time"][:5],
+        "appointment_type": booking["appointment_type"],
+        "status": "confirmed",
+        "calendar_event_id": str(event["id"]),
+    }
+
+
+def append_booking_record(booking: dict[str, str]) -> None:
+    """Persist a confirmed booking only after the Calendar event exists."""
+    BOOKINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    if BOOKINGS_PATH.exists():
+        data = json.loads(BOOKINGS_PATH.read_text(encoding="utf-8"))
+    else:
+        data = {"bookings": []}
+
+    bookings = data.get("bookings")
+    if not isinstance(bookings, list):
+        raise RuntimeError(f"{BOOKINGS_PATH} must contain a top-level bookings list.")
+
+    bookings.append(booking)
+    tmp_path = BOOKINGS_PATH.with_suffix(f"{BOOKINGS_PATH.suffix}.tmp")
+    tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    tmp_path.replace(BOOKINGS_PATH)
+
+
+async def send_confirmation_with_openclaw(
+    openclaw: OpenClawClient,
+    call: ActiveCall,
+    booking: dict[str, str],
+) -> dict[str, Any]:
+    """Ask OpenClaw only to send the patient confirmation via WhatsApp/Telegram."""
+    message = f"""
+You are Maya's patient confirmation worker for HealthFirst Clinic.
+
+Responsibilities:
+- Send one concise confirmation to the patient only through configured WhatsApp or Telegram.
+- Prefer WhatsApp for the patient's phone number when available.
+- If WhatsApp is unavailable but Telegram is configured, use Telegram.
+- Never use SMS, Discord, Slack, email, or any other channel.
+- Do not create, modify, or delete Google Calendar events.
+- Do not edit bookings.json.
+
+Confirmed booking:
+{json.dumps(booking, indent=2)}
+
+Telcoflow call metadata:
+- call_id: {call.call_id}
+- caller_number: {call.caller_number}
+- callee_number: {call.callee_number}
+
+Return only JSON:
+{{
+  "message_sent": true | false,
+  "channel": "whatsapp" | "telegram" | "none",
+  "notes": "short operational note"
+}}
+""".strip()
+    try:
+        return await openclaw.run_json(f"healthfirst-booking-confirm-{call.call_id}", message)
+    except Exception as exc:
+        logger.exception("OpenClaw confirmation send failed")
+        return {
+            "message_sent": False,
+            "channel": "none",
+            "notes": f"Calendar event created, but confirmation failed: {exc}",
+        }
 
 
 async def handle_incoming_call(
