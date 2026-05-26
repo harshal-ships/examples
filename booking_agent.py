@@ -56,6 +56,8 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 
+
+
 # Maya's system prompt is intentionally limited to the voice conversation.
 # Calendar writes, messaging, and JSON persistence happen only after the call.
 MAYA_BOOKING_PROMPT = """Your name is Maya. You are an appointment booking assistant for HealthFirst Clinic.
