@@ -33,13 +33,20 @@ PY
 fi
 
 # Create a minimal OpenClaw config on first boot; the persistent disk preserves edits.
-if [[ ! -f "$OPENCLAW_CONFIG_PATH" ]]; then
-  cat > "$OPENCLAW_CONFIG_PATH" <<EOF
+cat > "$OPENCLAW_CONFIG_PATH" <<EOF
 {
   "gateway": {
     "mode": "local",
     "port": ${OPENCLAW_GATEWAY_PORT},
-    "bind": "lan"
+    "bind": "lan",
+    "trustedProxies": ["10.0.0.0/8"],
+    "auth": {
+      "token": "${OPENCLAW_GATEWAY_TOKEN}"
+    },
+    "controlUi": {
+      "allowedOrigins": ["https://examples-n0xz.onrender.com"],
+      "dangerouslyAllowHostHeaderOriginFallback": true
+    }
   },
   "agents": {
     "defaults": {
