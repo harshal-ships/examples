@@ -112,7 +112,7 @@ with open(sys.argv[1], "w", encoding="utf-8") as config_file:
 PY
 
 # Start OpenClaw first so the Python scripts can use `openclaw agent` locally.
-openclaw gateway --bind lan --port "$OPENCLAW_GATEWAY_PORT" --trusted-proxies "10.0.0.0/8" --allow-unconfigured &
+openclaw gateway lan --port "$OPENCLAW_GATEWAY_PORT" --allow-unconfigured &
 OPENCLAW_PID=$!
 
 
@@ -123,7 +123,39 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-sleep "${OPENCLAW_BOOT_DELAY_SECONDS:-5}"
+wait_for_openclaw() {
+  local timeout="${OPENCLAW_BOOT_TIMEOUT_SECONDS:-120}"
+  local deadline=$((SECONDS + timeout))
+  echo "Waiting for OpenClaw gateway on port ${OPENCLAW_GATEWAY_PORT}..."
+
+  while (( SECONDS < deadline )); do
+    if ! kill -0 "$OPENCLAW_PID" 2>/dev/null; then
+      echo "OpenClaw gateway exited before becoming ready." >&2
+      wait "$OPENCLAW_PID"
+      exit 1
+    fi
+
+    if python - <<'PY'
+import os
+import socket
+
+port = int(os.environ["OPENCLAW_GATEWAY_PORT"])
+with socket.create_connection(("127.0.0.1", port), timeout=1):
+    pass
+PY
+    then
+      echo "OpenClaw gateway is accepting connections."
+      return 0
+    fi
+
+    sleep 2
+  done
+
+  echo "Timed out waiting for OpenClaw gateway after ${timeout}s." >&2
+  exit 1
+}
+
+wait_for_openclaw
 
 # AGENT_MODE controls what this Render service runs:
 # - gateway: OpenClaw only
