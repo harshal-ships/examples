@@ -65,7 +65,6 @@ cat > "$OPENCLAW_CONFIG_PATH" <<EOF
   }
 }
 EOF
-fi
 
 # Start OpenClaw first so the Python scripts can use `openclaw agent` locally.
 openclaw gateway --bind lan --port "$OPENCLAW_GATEWAY_PORT" --allow-unconfigured &
