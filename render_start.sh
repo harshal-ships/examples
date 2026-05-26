@@ -32,39 +32,84 @@ PY
   chmod 600 "$GOOGLE_CALENDAR_CREDENTIALS"
 fi
 
-# Create a minimal OpenClaw config on first boot; the persistent disk preserves edits.
-cat > "$OPENCLAW_CONFIG_PATH" <<EOF
-{
-  "gateway": {
-    "mode": "local",
-    "port": ${OPENCLAW_GATEWAY_PORT},
-    "bind": "lan",
-    "trustedProxies": ["10.0.0.0/8"],
-    "auth": {
-      "token": "${OPENCLAW_GATEWAY_TOKEN}"
-    },
-    "controlUi": {
-      "allowedOrigins": ["https://examples-n0xz.onrender.com"],
-      "dangerouslyAllowHostHeaderOriginFallback": true
+# Create a minimal OpenClaw config on each boot. Channel entries stay limited to
+# WhatsApp and Telegram so patient confirmations cannot fall back to SMS/other apps.
+python - "$OPENCLAW_CONFIG_PATH" <<'PY'
+import json
+import os
+import sys
+
+
+def csv_env(name: str) -> list[str]:
+    value = os.environ.get(name, "")
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+channels = {}
+whatsapp_allow_from = csv_env("WHATSAPP_ALLOW_FROM")
+if whatsapp_allow_from:
+    channels["whatsapp"] = {
+        "dmPolicy": "allowlist",
+        "allowFrom": whatsapp_allow_from,
     }
-  },
-  "agents": {
-    "defaults": {
-      "workspace": "${OPENCLAW_WORKSPACE_DIR}",
-      "model": {
-        "primary": "google/gemini-2.5-flash"
-      }
+
+telegram_bot_token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
+if telegram_bot_token:
+    telegram = {
+        "enabled": True,
+        "botToken": telegram_bot_token,
+    }
+    telegram_allow_from = csv_env("TELEGRAM_ALLOW_FROM")
+    if telegram_allow_from:
+        telegram["allowFrom"] = telegram_allow_from
+    channels["telegram"] = telegram
+
+config = {
+    "gateway": {
+        "mode": "local",
+        "port": int(os.environ["OPENCLAW_GATEWAY_PORT"]),
+        "bind": "lan",
+        "trustedProxies": ["10.0.0.0/8"],
+        "auth": {
+            "token": os.environ.get("OPENCLAW_GATEWAY_TOKEN", ""),
+        },
+        "controlUi": {
+            "allowedOrigins": ["https://examples-n0xz.onrender.com"],
+            "dangerouslyAllowHostHeaderOriginFallback": True,
+        },
     },
-    "list": [
-      {
-        "id": "main",
-        "default": true,
-        "workspace": "${OPENCLAW_WORKSPACE_DIR}"
-      }
-    ]
-  }
+    "messages": {
+        "queue": {
+            "byChannel": {
+                "whatsapp": "followup",
+                "telegram": "followup",
+            },
+        },
+    },
+    "agents": {
+        "defaults": {
+            "workspace": os.environ["OPENCLAW_WORKSPACE_DIR"],
+            "model": {
+                "primary": "google/gemini-2.5-flash",
+            },
+        },
+        "list": [
+            {
+                "id": "main",
+                "default": True,
+                "workspace": os.environ["OPENCLAW_WORKSPACE_DIR"],
+            },
+        ],
+    },
 }
-EOF
+
+if channels:
+    config["channels"] = channels
+
+with open(sys.argv[1], "w", encoding="utf-8") as config_file:
+    json.dump(config, config_file, indent=2)
+    config_file.write("\n")
+PY
 
 # Start OpenClaw first so the Python scripts can use `openclaw agent` locally.
 openclaw gateway --bind lan --port "$OPENCLAW_GATEWAY_PORT" --config "$OPENCLAW_CONFIG_PATH" --allow-unconfigured &

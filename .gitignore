@@ -118,6 +118,8 @@ ipython_config.py
 .pdm-build/
 
 bookings.json
+google-calendar-credentials.json
+*-credentials.json
 # pixi
 #   Similar to Pipfile.lock, it is generally recommended to include pixi.lock in version control.
 # pixi.lock

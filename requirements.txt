@@ -1,3 +1,4 @@
 google-genai
 telcoflow-sdk==0.27.1
+python-dotenv
 #ping

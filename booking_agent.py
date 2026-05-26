@@ -22,6 +22,15 @@ from telcoflow_sdk import ActiveCall, TelcoflowClient, TelcoflowClientConfig
 import telcoflow_sdk.events as events
 
 
+try:
+    from dotenv import load_dotenv
+except ImportError:  # Render injects env vars directly; dotenv is only for local runs.
+    load_dotenv = None
+
+if load_dotenv is not None:
+    load_dotenv()
+
+
 # Runtime constants are centralized so the Telcoflow, Gemini, and OpenClaw
 # boundaries stay visible instead of being mixed into call handlers.
 AUDIO_MIME_TYPE = "audio/pcm;rate=24000"
@@ -71,35 +80,36 @@ def require_env(name: str) -> str:
 
 def ensure_google_calendar_credentials() -> str:
     """Materialize Render's JSON secret into the credentials file OpenClaw expects."""
+    credentials_json = os.getenv("GOOGLE_CALENDAR_CREDENTIALS_JSON")
+    if credentials_json:
+        target_path = Path(
+            os.getenv("GOOGLE_CALENDAR_CREDENTIALS_PATH", "/data/google-calendar-credentials.json")
+        ).expanduser().resolve()
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+
+        try:
+            credentials_data = json.loads(credentials_json)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                "GOOGLE_CALENDAR_CREDENTIALS_JSON must be one complete JSON object, "
+                "not separate Render env vars for each JSON field."
+            ) from exc
+
+        target_path.write_text(json.dumps(credentials_data), encoding="utf-8")
+        target_path.chmod(0o600)
+        os.environ["GOOGLE_CALENDAR_CREDENTIALS"] = str(target_path)
+        return str(target_path)
+
     credentials_path = os.getenv("GOOGLE_CALENDAR_CREDENTIALS")
     if credentials_path:
         return credentials_path
 
-    credentials_json = os.getenv("GOOGLE_CALENDAR_CREDENTIALS_JSON")
     if not credentials_json:
         raise RuntimeError(
             "Missing Google Calendar credentials. Set GOOGLE_CALENDAR_CREDENTIALS "
             "to a credentials file path, or set GOOGLE_CALENDAR_CREDENTIALS_JSON "
             "to the full JSON credentials object."
         )
-
-    target_path = Path(
-        os.getenv("GOOGLE_CALENDAR_CREDENTIALS_PATH", "/data/google-calendar-credentials.json")
-    )
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-
-    try:
-        credentials_data = json.loads(credentials_json)
-    except json.JSONDecodeError as exc:
-        raise RuntimeError(
-            "GOOGLE_CALENDAR_CREDENTIALS_JSON must be one complete JSON object, "
-            "not separate Render env vars for each JSON field."
-        ) from exc
-
-    target_path.write_text(json.dumps(credentials_data), encoding="utf-8")
-    target_path.chmod(0o600)
-    os.environ["GOOGLE_CALENDAR_CREDENTIALS"] = str(target_path)
-    return str(target_path)
 
 
 def make_gemini_client() -> genai.Client:
@@ -350,8 +360,9 @@ Work to perform:
 1. Read the full transcript below.
 2. Extract patient full name, phone number, preferred date, preferred time, and appointment type.
 3. Check Google Calendar availability for the requested HealthFirst Clinic appointment slot.
-4. If available, create the Google Calendar event, append the booking to bookings.json with status "confirmed", and send the patient a WhatsApp confirmation. If WhatsApp is not configured, send SMS through the configured messaging channel.
-5. If unavailable, find the next 3 available appointment slots and use OpenClaw to trigger a Telcoflow outbound call to the patient's phone number so Maya can offer those slots. Also send those options by WhatsApp or SMS.
+4. If available, create the Google Calendar event, append the booking to bookings.json with status "confirmed", and send the patient a confirmation only through a configured WhatsApp or Telegram channel.
+5. If unavailable, find the next 3 available appointment slots and use OpenClaw to trigger a Telcoflow outbound call to the patient's phone number so Maya can offer those slots. Also send those options only through a configured WhatsApp or Telegram channel.
+6. Never use SMS, Discord, Slack, email, or any other channel for patient confirmations.
 
 Return only one JSON object with:
 {{
