@@ -67,8 +67,9 @@ cat > "$OPENCLAW_CONFIG_PATH" <<EOF
 EOF
 
 # Start OpenClaw first so the Python scripts can use `openclaw agent` locally.
-openclaw gateway --bind lan --port "$OPENCLAW_GATEWAY_PORT" --allow-unconfigured &
+openclaw gateway --bind lan --port "$OPENCLAW_GATEWAY_PORT" --config "$OPENCLAW_CONFIG_PATH" --allow-unconfigured &
 OPENCLAW_PID=$!
+
 
 cleanup() {
   kill "$OPENCLAW_PID" 2>/dev/null || true
