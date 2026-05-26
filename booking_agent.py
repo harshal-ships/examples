@@ -393,6 +393,7 @@ class OpenClawClient:
             "agent",
             "--agent",
             self.agent,
+            "--local",
             "--session-key",
             session_key,
             "--message",
@@ -478,9 +479,16 @@ async def process_booking_with_openclaw(
     if not rendered_transcript.strip():
         raise RuntimeError("Gemini did not return a transcript for OpenClaw to process.")
 
+    logger.info("Call %s: extracting booking details with OpenClaw", call.call_id)
     extraction = await extract_booking_with_openclaw(openclaw, call, rendered_transcript)
     booking = normalize_extracted_booking(extraction, call)
     if booking is None:
+        logger.info(
+            "Call %s: booking needs human review. OpenClaw status=%s notes=%s",
+            call.call_id,
+            extraction.get("status"),
+            extraction.get("notes"),
+        )
         return {
             "status": "needs_human_review",
             "booking": None,
@@ -491,7 +499,14 @@ async def process_booking_with_openclaw(
         }
 
     appointment = calendar.appointment_range(booking)
+    logger.info(
+        "Call %s: checking calendar availability for %s to %s",
+        call.call_id,
+        appointment.start.isoformat(),
+        appointment.end.isoformat(),
+    )
     if not calendar.is_available(appointment):
+        logger.info("Call %s: requested calendar slot is unavailable", call.call_id)
         return {
             "status": "unavailable",
             "booking": None,
@@ -502,8 +517,10 @@ async def process_booking_with_openclaw(
         }
 
     event = calendar.create_event(booking, appointment, call.call_id)
+    logger.info("Call %s: created Google Calendar event %s", call.call_id, event.get("id"))
     booking_record = build_booking_record(booking, event)
     append_booking_record(booking_record)
+    logger.info("Call %s: appended booking %s to %s", call.call_id, booking_record["id"], BOOKINGS_PATH)
     message_result = await send_confirmation_with_openclaw(openclaw, call, booking_record)
 
     return {

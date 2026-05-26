@@ -111,82 +111,66 @@ with open(sys.argv[1], "w", encoding="utf-8") as config_file:
     config_file.write("\n")
 PY
 
-# Start OpenClaw first so the Python scripts can use `openclaw agent` locally.
-# The Render-installed OpenClaw CLI uses `gateway lan` with config/env defaults.
-openclaw gateway lan &
-OPENCLAW_PID=$!
+# Render web services must bind a port. Keep this tiny HTTP server separate
+# from the booking worker so OpenClaw gateway CLI differences cannot break boot.
+python - <<'PY' &
+import os
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+
+
+class HealthHandler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        body = b"ok\n"
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+    def log_message(self, format, *args):
+        return
+
+
+port = int(os.environ.get("PORT", os.environ.get("OPENCLAW_GATEWAY_PORT", "8080")))
+ThreadingHTTPServer(("0.0.0.0", port), HealthHandler).serve_forever()
+PY
+HEALTH_PID=$!
 
 
 cleanup() {
-  kill "$OPENCLAW_PID" 2>/dev/null || true
+  kill "$HEALTH_PID" 2>/dev/null || true
   if [[ -n "${BOOKING_PID:-}" ]]; then kill "$BOOKING_PID" 2>/dev/null || true; fi
   if [[ -n "${REMINDER_PID:-}" ]]; then kill "$REMINDER_PID" 2>/dev/null || true; fi
 }
 trap cleanup EXIT INT TERM
 
-wait_for_openclaw() {
-  local timeout="${OPENCLAW_BOOT_TIMEOUT_SECONDS:-120}"
-  local deadline=$((SECONDS + timeout))
-  echo "Waiting for OpenClaw gateway on port ${OPENCLAW_GATEWAY_PORT}..."
-
-  while (( SECONDS < deadline )); do
-    if ! kill -0 "$OPENCLAW_PID" 2>/dev/null; then
-      echo "OpenClaw gateway exited before becoming ready." >&2
-      wait "$OPENCLAW_PID"
-      exit 1
-    fi
-
-    if python - <<'PY'
-import os
-import socket
-import sys
-
-port = int(os.environ["OPENCLAW_GATEWAY_PORT"])
-try:
-    with socket.create_connection(("127.0.0.1", port), timeout=1):
-        pass
-except OSError:
-    sys.exit(1)
-PY
-    then
-      echo "OpenClaw gateway is accepting connections."
-      return 0
-    fi
-
-    sleep 2
-  done
-
-  echo "Timed out waiting for OpenClaw gateway after ${timeout}s." >&2
-  exit 1
-}
-
-wait_for_openclaw
+echo "Health server listening on port ${PORT:-$OPENCLAW_GATEWAY_PORT}."
 
 # AGENT_MODE controls what this Render service runs:
-# - gateway: OpenClaw only
-# - booking: inbound booking agent plus OpenClaw
-# - reminder: hourly reminder agent plus OpenClaw
+# - gateway: health endpoint only
+# - booking: inbound booking agent
+# - reminder: hourly reminder agent
 # - both: booking and reminder in one container, sharing /data
 case "${AGENT_MODE:-booking}" in
   gateway)
-    wait "$OPENCLAW_PID"
+    wait "$HEALTH_PID"
     ;;
   booking)
     python /app/booking_agent.py &
     BOOKING_PID=$!
-    wait -n "$OPENCLAW_PID" "$BOOKING_PID"
+    wait -n "$HEALTH_PID" "$BOOKING_PID"
     ;;
   reminder)
     python /app/reminder_agent.py &
     REMINDER_PID=$!
-    wait -n "$OPENCLAW_PID" "$REMINDER_PID"
+    wait -n "$HEALTH_PID" "$REMINDER_PID"
     ;;
   both)
     python /app/booking_agent.py &
     BOOKING_PID=$!
     python /app/reminder_agent.py &
     REMINDER_PID=$!
-    wait -n "$OPENCLAW_PID" "$BOOKING_PID" "$REMINDER_PID"
+    wait -n "$HEALTH_PID" "$BOOKING_PID" "$REMINDER_PID"
     ;;
   *)
     echo "Unknown AGENT_MODE: ${AGENT_MODE}" >&2
