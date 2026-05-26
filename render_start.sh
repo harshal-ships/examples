@@ -112,8 +112,8 @@ with open(sys.argv[1], "w", encoding="utf-8") as config_file:
 PY
 
 # Start OpenClaw first so the Python scripts can use `openclaw agent` locally.
-openclaw gateway lan --port "$OPENCLAW_GATEWAY_PORT" --allow-unconfigured &
-OPENCLAW_PID=$!
+openclaw gateway run --bind lan --allow-unconfigured &
+PENCLAW_PID=$!
 
 
 cleanup() {
@@ -138,10 +138,14 @@ wait_for_openclaw() {
     if python - <<'PY'
 import os
 import socket
+import sys
 
 port = int(os.environ["OPENCLAW_GATEWAY_PORT"])
-with socket.create_connection(("127.0.0.1", port), timeout=1):
-    pass
+try:
+    with socket.create_connection(("127.0.0.1", port), timeout=1):
+        pass
+except OSError:
+    sys.exit(1)
 PY
     then
       echo "OpenClaw gateway is accepting connections."
